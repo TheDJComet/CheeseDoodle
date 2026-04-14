@@ -1,0 +1,8 @@
+.env
+ME.json
+seen_jobs.csv
+*.pdf
+Lib/
+Scripts/
+Include/
+pyvenv.cfg
