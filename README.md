@@ -44,11 +44,10 @@ Then in the app:
 ## Output
 
 All generated files are saved to your home directory under `CheeseDoodle/`:
-~/CheeseDoodle/
-├── Cover_Letters/ # Generated cover letters (.txt)
-├── job_cache/ # Cached job summaries
-└── seen_jobs/
-└── seen_jobs.csv # Jobs already processed
+Cover_Letters/ # Generated cover letters (.txt)
+job_cache/ # Cached job summaries
+seen_jobs/
+<--- seen_jobs.csv # Jobs already processed
 You can view, download, and clear your seen jobs history directly in the sidebar.
 
 ## Notes
