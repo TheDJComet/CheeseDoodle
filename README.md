@@ -1,24 +1,23 @@
-# CheeseDoodle - AI Job Application Agent
+# CheeseDoodle 🧀 - AI Job Application Agent
 
-An automated job application agent that searches for jobs, scores them against your resume using Claude AI, generates personalized cover letters, and automates the application process using Playwright.
+An automated job application agent that searches for jobs, scores them against your resume using Claude AI, and generates personalized cover letters. Features a Streamlit web UI for easy use.
 
 ## Features
 
-- PDF resume parsing
-- Job search via JSearch API
-- AI-powered job scoring (Claude)
-- Automated browser-based application submission
-- Cover letter generation on demand
-- Seen jobs tracking to avoid duplicates
-- Daily scheduling via Windows Task Scheduler
+- 📄 PDF resume upload via drag and drop
+- 🔍 Job search via JSearch API
+- 🤖 AI-powered job scoring (Claude)
+- ✉️ Personalized cover letter generation
+- 👀 Seen jobs tracking to avoid duplicates
+- 🖥️ Streamlit web UI — no command line needed
 
 ## Setup
 
 ### Prerequisites
 
 - Python 3.9+
-- A Anthropic API key
-- A RapidAPI key with JSearch access
+- An Anthropic API key — [Get one here](https://console.anthropic.com/)
+- A RapidAPI key with JSearch access — [Get one here](https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch)
 
 ### Installation
 
@@ -27,50 +26,48 @@ An automated job application agent that searches for jobs, scores them against y
    py -m venv CheeseDoodle
    CheeseDoodle\Scripts\activate
 3. Install dependencies:
-   pip install pdfplumber python-dotenv anthropic playwright requests beautifulsoup4
+   pip install pdfplumber anthropic playwright requests beautifulsoup4 streamlit pandas
    playwright install
-
-### Configuration
-
-Create a `.env` file in the project root:
-ANTHROPIC_API_KEY=your_key_here
-JSEARCH_API_KEY=your_key_here
-RESUME_PATH=path_to_your_resume.pdf
-
-Create a `ME.json` file with your personal info:
-
-```json
-{
-  "first_name": "",
-  "last_name": "",
-  "email": "",
-  "phone": "",
-  "address": {
-    "street": "",
-    "city": "",
-    "state": "",
-    "zip": ""
-  },
-  "linkedin": "",
-  "work_authorized": true,
-  "years_of_experience": 0
-}
-```
 
 ## Usage
 
-py job_agent.py
+Run the Streamlit UI:
+python -m streamlit run JobDoodle.py
+Then in the app:
 
-Set `DRY_RUN = True` in `job_agent.py` to test without submitting real applications.
+1. Enter your **Anthropic** and **JSearch** API keys in the sidebar
+2. Upload your resume (PDF) via drag and drop
+3. Enter job titles or keywords (comma-separated)
+4. Set your preferred location and remote preference
+5. Click **Find Jobs**
+
+## Output
+
+All generated files are saved to your home directory under `CheeseDoodle/`:
+~/CheeseDoodle/
+├── Cover_Letters/ # Generated cover letters (.txt)
+├── job_cache/ # Cached job summaries
+└── seen_jobs/
+└── seen_jobs.csv # Jobs already processed
+You can view, download, and clear your seen jobs history directly in the sidebar.
 
 ## Notes
 
-- JSearch free tier has a monthly request limit
-- Recommend running search weekly and apply daily to conserve API quota
-- Bot detection may prevent automation on some job sites
+- JSearch free tier has a monthly request limit — recommend searching weekly to conserve quota
+- Each user provides their own API keys — no shared credentials
+- Cover letters are skipped if one already exists for that company
 
-## V1 Limitations
+## Limitations
 
-- Claude-based apply loop works best on simple direct application pages
+- Claude-based scoring works best with detailed job descriptions
 - Complex ATS platforms (Greenhouse, Lever) not yet fully supported
-- Some pages may require manual intervention
+- Remote filter depends on JSearch API support per listing
+
+## Key things updated:
+
+- Removed .env, ME.json, and RESUME_PATH setup instructions
+- Added Streamlit UI usage instructions
+- Added output directory structure
+- Added seen jobs sidebar mention
+- Removed old py job_agent.py usage and DRY_RUN references
+- Updated dependencies list (added streamlit, pandas, removed python-dotenv)
