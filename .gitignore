@@ -1,8 +1,32 @@
+# Environment & Keys
 .env
-ME.json
-seen_jobs.csv
-*.pdf
-Lib/
-Scripts/
-Include/
+
+# Python
+__pycache__/
+*.pyc
 pyvenv.cfg
+
+# Resume (private)
+Resume/
+
+# Generated output (personal data)
+Cover_Letters/
+job_cache/
+Jobs/
+seen_jobs.csv
+
+# Virtual environment
+Lib/
+Include/
+Scripts/
+share/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Auto-Generated
+etc/
+
+# Planned Updates
+applyfunc.txt

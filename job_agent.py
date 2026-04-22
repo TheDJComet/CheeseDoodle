@@ -1,11 +1,9 @@
-#automated job application agent using Claude for job search, scoring, cover letter generation, and Playwright for application submission. It extracts resume text, searches for jobs, scores them based on fit, generates personalized cover letters, and automates the application process by analyzing job application pages and performing the necessary actions.
 import base64
 import json
 import random
 import requests # type: ignore
 import pdfplumber # type: ignore
 import os
-from dotenv import load_dotenv # type: ignore
 import csv
 import anthropic # type: ignore
 from playwright.sync_api import sync_playwright # type: ignore
@@ -13,58 +11,142 @@ from urllib.parse import urlencode
 import time
 from bs4 import BeautifulSoup  # type: ignore
 import re
+from pathlib import Path
 
-load_dotenv()
-api_key = os.getenv("ANTHROPIC_API_KEY")
-job_api_key = os.getenv("JSEARCH_API_KEY")
-client = anthropic.Anthropic(api_key=api_key)
-resume = os.getenv("RESUME_PATH")
-search_query = ["Software Engineer", "Frontend Developer", "Backend Developer", "Full Stack Developer", "DevOps Engineer", "Cybersecurity Analyst", "Game Developer"]
-locations = ["United States"]
-job_type = ["remote", "onsite", "hybrid"]
-min_salary = 60000
-DRY_RUN = True
 
+
+
+
+CACHE_DIR = Path.home() / "CheeseDoodle" / "job_cache"
+Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
+
+# -----------------------------
+# UTILS
+# -----------------------------
+def chunk_list(lst, size):
+    for i in range(0, len(lst), size):
+        yield lst[i:i + size]
+
+def safe_filename(name):
+    name = re.sub(r'[\\/*?:"<>|]', "_", name)
+    name = re.sub(r'\s+', "_", name)
+    return name[:100]
 
 def extract_json(text):
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    if match:
-        return json.loads(match.group())
-    return None
+    try:
+        return json.loads(text)
+    except:
+        pass
 
+    # Try to extract JSON array
+    match = re.search(r'\[\s*{.*?}\s*\]', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except:
+            pass
+
+    # Try to fix common issues
+    try:
+        cleaned = text.strip()
+
+        # remove leading text before [
+        cleaned = cleaned[cleaned.find('['):]
+
+        # remove trailing text after ]
+        cleaned = cleaned[:cleaned.rfind(']')+1]
+
+        return json.loads(cleaned)
+    except:
+        return None
+    
+
+    
+#------------------------------
+# SAVE AND LOAD
+#------------------------------
+def load_seen_jobs():
+    seen = set()
+    file_path = Path.home() / "CheeseDoodle" / "seen_jobs" / "seen_jobs.csv"
+    if file_path.exists():
+        with open(file_path, "r") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                seen.add(row[0])
+    return seen
+
+def save_seen_job(job_url):
+    base_dir = Path.home() / "CheeseDoodle" / "seen_jobs"
+    file_path = base_dir / "seen_jobs.csv"
+        
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(file_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([job_url])
+
+
+# -----------------------------
+# RESUME
+# -----------------------------
 def extract_resume_text(pdf_path: str) -> str:
     with pdfplumber.open(pdf_path) as pdf:
         pages = [page.extract_text() for page in pdf.pages]
     return "\n".join(filter(None, pages))
 
+def summarize_resume(resume_text,client):
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1000,
+        messages=[{
+            "role": "user",
+            "content": f"""
+Summarize this resume into structured JSON:
+- skills
+- technologies
+- experience highlights
+- projects
+- education
 
-def search_jobs():
+Be concise and optimized for job applications.
+
+Resume:
+{resume_text}
+"""
+        }]
+    )
+    return response.content[0].text.strip()
+
+# -----------------------------
+# JOB SEARCH
+# -----------------------------
+def search_jobs(user_queries, location="United States", remote=False, job_api_key=None):
     jobs = []
-    for query in search_query:
-        for page_num in range(1,4):  # Get first 3 pages of results
+    for query in user_queries:
+        print(f"Searching for '{query}' jobs...")
+        for page_num in range(1, 3):  # Get first 2 pages of results
             url = "https://jsearch.p.rapidapi.com/search"
-            
+
             headers = {
                 "X-RapidAPI-Key": job_api_key,
                 "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
             }
-            
+
             params = {
-                "query": f"{query} in United States",
+                "query": f"{query} in {location}",
                 "num_pages": "1",
                 "date_posted": "month",
-                "remote_jobs_only": "false",
                 "employment_types": "FULLTIME",
-                "job_requirements": "no_experience,under_3_years_experience"
             }
-            
+
+            if remote:
+                params["remote"] = "true"
+
             response = requests.get(url, headers=headers, params=params)
             data = response.json()
-            #print(f"API response for '{query}': {data.get('status')} - {len(data.get('data', []))} jobs")
-            #print(f"Full response: {data}")
+
             for job in data.get("data", []):
-                if not job.get("job_apply_is_direct"):
-                    continue
                 jobs.append({
                     "title": job.get("job_title"),
                     "company": job.get("employer_name"),
@@ -72,218 +154,203 @@ def search_jobs():
                     "link": job.get("job_apply_link"),
                     "description": job.get("job_description")
                 })
-    return jobs
 
-def score_job(resume_text: str):
-    jobs = search_jobs()
-    print(f"Jobs found: {len(jobs)}")
-    scored_jobs = []
-    seen_urls = load_seen_jobs()
-    print(f"Seen URLs loaded: {len(seen_urls)}")
-    new_urls = []
+    unique_jobs = {job['link']: job for job in jobs}.values()
+    print(f"Found {len(unique_jobs)} unique jobs.")
+    return list(unique_jobs)
 
-    # Build one big string with all jobs
-    jobs_text = ""
-    for i, job in enumerate(jobs):
-        if job.get("link") in seen_urls:
-            continue
-        jobs_text += f"""
+# -----------------------------
+# JOB SUMMARIZATION + CACHE
+# -----------------------------
+def get_job_cache_path(job):
+    name = safe_filename(job.get("company", "unknown") + "_" + job.get("title", "role"))
+    return CACHE_DIR / f"{name}.txt"
+
+def summarize_job(job):
+    cache_path = get_job_cache_path(job)
+
+    if cache_path.exists():
+        with open(cache_path, "r") as f:
+            return f.read()
+
+    description = BeautifulSoup(job.get("description", ""), "html.parser").get_text()
+
+    trimmed = description[:1500]
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=500,
+        messages=[{
+            "role": "user",
+            "content": f"""
+Summarize this job into:
+- key responsibilities
+- required skills
+- preferred skills
+
+Job:
+{trimmed}
+"""
+        }]
+    )
+
+    summary = response.content[0].text.strip()
+
+    with cache_path.open("w", encoding="utf-8") as f:
+        f.write(summary)
+
+    return summary
+
+# -----------------------------
+# SCORING JOBS
+# -----------------------------
+def score_jobs(resume_summary,jobs,client):
+    seen_jobs = load_seen_jobs()
+    filtered_jobs = [job for job in jobs if job.get("link") not in seen_jobs]
+    all_scored_jobs = []
+
+    CHUNK_SIZE = 8  # sweet spot (5–10 works well)
+
+    for chunk_index, job_chunk in enumerate(chunk_list(filtered_jobs, CHUNK_SIZE)):
+        print(f"Scoring chunk {chunk_index + 1}...")
+
+        jobs_text = ""
+        for i, job in enumerate(job_chunk):
+            jobs_text += f"""
 Job {i+1}:
-Title: {job.get('title')}
-Company: {job.get('company')}
-Location: {job.get('location')}
-Link: {job.get('link')}
-Description: {job.get('description')}
+Title: {job['title']}
+Company: {job['company']}
+Description: {job['description'][:800]}
 ---
 """
-        new_urls.append(job.get("link"))
 
-    if not jobs_text:
-        print("No new jobs to score.")
-        return []
-    
-    # ONE Claude call for all jobs
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=8000,
-        messages=[{"role": "user", "content": f"""The following resume may be in a jumbled two-column format.
-Interpret it as best you can, then score each job 1-10 based on fit.
-Return JSON only:
-[{{"job_number": 1, "score": 8, "reason": "..."}}]
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1500,
+            messages=[{
+                "role": "user",
+                "content": f"""
+You are a JSON API.
 
-Resume:
-{resume_text}
+Return ONLY valid JSON.
+No explanations. No text outside JSON.
+
+Format:
+[
+  {{"job_number": 1, "score": 7, "reason": "short reason"}}
+]
+
+Rules:
+- Output MUST start with [
+- Output MUST end with ]
+- No trailing commas
+
+Candidate:
+{resume_summary}
 
 Jobs:
-{jobs_text}"""}]
-    )
-    
-    import json
-    print(response.content[0].text)
-    scores = json.loads(response.content[0].text)
+{jobs_text}
+"""
+            }]
+        )
 
-    for url in new_urls:
-        save_seen_job(url)
+        raw = response.content[0].text
+        scores = extract_json(raw)
 
-    for i, score_data in enumerate(scores):
-        job = jobs[i]
-        job["score"] = score_data["score"]
-        job["reason"] = score_data["reason"]
-        scored_jobs.append(job)
+        if not scores:
+            print("Failed chunk. Raw output:")
+            print(raw[:500])
+            continue
 
-    scored_jobs = [x for x in scored_jobs if x["score"] >= 6]
-    
-    return scored_jobs
-
-def load_seen_jobs():
-    seen_urls = set()
-    if os.path.exists("seen_jobs.csv"):
-        with open("seen_jobs.csv", "r") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                seen_urls.add(row[0])
-    else:
-        with open("seen_jobs.csv", "w") as f:
-            writer = csv.writer(f)
-    return seen_urls
-
-def save_seen_job(job_url: str):
-    with open("seen_jobs.csv", "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([job_url])
-
-def load_personal_info():
-    with open("ME.json", "r") as f:
-        return json.load(f)
-
-personal_info = load_personal_info()
-
-def generate_cover_letter(job,resume_text):
-    job_description = job.get("description", "")
-    company = job.get("company", "")
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=8000,
-        messages=[{"role": "user", "content": f"""Generate a personalized cover letter for the following job description, using the provided resume text and personal information. Highlight relevant skills and experiences that match the job requirements.
-Job Description:
-{job_description}
-Resume Text:
-{resume_text}
-Personal Information:
-{json.dumps(personal_info)}"""}]
-
-    )
-    print(response.content[0].text)
-    cover_letter = response.content[0].text.strip()
-
-    with open(f"cover_letter_{company}.txt", "w") as f:
-        f.write(cover_letter)
-
-    return f"cover_letter_{company}.txt"
-
-
-def apply_to_job(job, personal_info,resume_text):
-    resume_path = resume
-    cover_letter_path = None  # Not generated yet
-    applied = False
-    skipped = False
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        page = browser.new_page()
-        page.goto(job["link"])
-        page.wait_for_load_state("networkidle")
-        max_steps = 10
-        steps = 0
-        while steps < max_steps:
-            steps += 1
-            time.sleep(2)  
-            html_content = page.inner_html("body")  # Get the entire page HTML
-            soup = BeautifulSoup(html_content, "html.parser")
-            for tag in soup(["script", "style"]):
-                tag.decompose()
-            clean_html = str(soup)[:40000]
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1000,
-                messages=[{"role": "user", "content": f"""Analyze this HTML of a job application page.
-                    What is the next single action to take to apply for this job?
-                    Personal info: {json.dumps(personal_info)}
-                    Resume path: {resume_path}
-                    If you cannot determine the next action or the page requires login/CAPTCHA,
-                    return: {{"action": "skip", "selector": "", "value": ""}}
-                    Return JSON only: {{"action": "click" or "type" or "upload" or "submit",
-                        "selector": "CSS selector for the element",
-                        "value": "text or file path if applicable"}}
-
-                        HTML:
-                        {clean_html}"""}]
-             )
-            
-            print(response.content[0].text)
-            try:
-            
-                action_data = extract_json(response.content[0].text)
-                if action_data is None:
-                    print("Could not extract JSON, skipping")
-                    continue
-            except json.JSONDecodeError:
-                print("Claude returned non-JSON, skipping this step")
-                print("Response was:", response.content[0].text[:200])
+        # map scores back to jobs
+        for i, score_data in enumerate(scores):
+            if i >= len(job_chunk):
                 continue
 
-            action = action_data.get("action")
-            selector = action_data.get("selector")
-            value = action_data.get("value")
-            skip = action_data.get("skip")
+            job = job_chunk[i]
+            job["score"] = score_data.get("score", 0)
+            job["reason"] = score_data.get("reason", "")
+            all_scored_jobs.append(job)
+            save_seen_job(job.get("link"))
+            
 
-            if action == "upload" and "cover" in action_data.get("value", "").lower():
-                if cover_letter_path is None:
-                    cover_letter_path = generate_cover_letter(job, resume_text)
-                action_data["value"] = cover_letter_path
+    # sort + take top
+    all_scored_jobs = sorted(all_scored_jobs, key=lambda x: x["score"], reverse=True)
 
-            if action == "click":
-                page.click(selector)
-            elif action == "type":
-                page.fill(selector, value)
-            elif action == "upload":
-                page.set_input_files(selector, value)
-            elif action == "skip":
-                skipped = True
-                print("Skipping this job application due to complexity or login requirement.")
-                break
-            elif action == "submit":
-                if DRY_RUN:
-                    print(f"DRY RUN: Would have submitted to {job['company']}")
-                    applied = True
-                    break
-                else:
-                    page.click(selector)
-                    page.wait_for_timeout(2000)
-                    applied = True
-                    break
-
-        browser.close()
-    return "applied" if applied else "skipped"
-
-def main():
-    resume_text = extract_resume_text(resume)
-    print(f"Extracted resume text length: {len(resume_text)} characters")
-    scored_jobs = score_job(resume_text)
-    applications_attempted = 0
-    applications_skipped = 0
-
-    for job in scored_jobs:
-        result = apply_to_job(job, personal_info, resume_text)
-        if result == "applied":
-            applications_attempted += 1
-        else:
-            applications_skipped += 1
+    return all_scored_jobs[:5]
 
 
-    print(f"Jobs scored 6+: {len(scored_jobs)}")
-    print(f"Applications attempted: {applications_attempted}")
-    print(f"Applications skipped: {applications_skipped}")
+# -----------------------------
+# COVER LETTER
+# -----------------------------
+def generate_cover_letter(job, resume_summary,client):
+    job_summary = summarize_job(job,client)
+    job_url = job.get("link", "N/A")
 
-if __name__ == "__main__":
-    main()
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=800,
+        messages=[{
+            "role": "user",
+            "content": f"""
+Write a concise (under 300 words) cover letter.
+
+Candidate:
+{resume_summary}
+
+Job:
+{job_summary}
+
+Job URL:
+{job_url}
+
+Make it tailored, professional, and direct.
+"""
+        }]
+    )
+
+    cover_letter = response.content[0].text.strip()
+
+    company = safe_filename(job.get("company", "unknown"))
+
+    filename = f"cover_letter_{company}.txt"
+    
+    base_dir = Path.home() / "CheeseDoodle" / "Cover_Letters"
+    file_path = base_dir / filename
+    if file_path.exists():
+        print (f"⚠️ {filename} already exists. Skipping save.")
+        return filename
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with file_path.open("w", encoding="utf-8") as f:
+        f.write(cover_letter)
+
+    return filename
+
+# -----------------------------
+# MAIN
+# -----------------------------
+def run_agent(uploaded_file,user_queries, location="United States", remote=False,anthropic_key=None, jsearch_key=None):
+    client = anthropic.Anthropic(api_key=anthropic_key)
+    resume_text = extract_resume_text(uploaded_file)
+    resume_summary = summarize_resume(resume_text, client)
+    jobs = search_jobs(user_queries, location, remote, jsearch_key)
+    top_jobs = score_jobs(resume_summary, jobs, client)
+
+    results = []
+
+    for job in top_jobs:
+        cover_letter_file = generate_cover_letter(job, resume_summary, client)
+        results.append({
+            "job_title": job.get("title"),
+            "company": job.get("company"),
+            "location": job.get("location"),
+            "link": job.get("link"),
+            "score": job.get("score"),
+            "reason": job.get("reason"),
+            "description": job.get("description"),
+            "cover_letter_file": cover_letter_file
+        })
+
+    return results
