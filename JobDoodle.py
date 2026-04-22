@@ -19,12 +19,13 @@ with st.sidebar:
     st.header("Seen Jobs")
     seen_jobs_path = Path.home() / "CheeseDoodle" / "Jobs" / "seen_jobs.csv"
     if seen_jobs_path.exists():
-        seen_jobs_df = pd.read_csv(seen_jobs_path)
-        st.dataframe(seen_jobs_df[["title", "company", "location", "link"]])
+        df = pd.read_csv(seen_jobs_path, header=None,names=["Link","Title","Company", "Location"])
+        st.write(f"Total jobs seen: **{len(df)}**")
+        st.dataframe(df[["Link","Title","Company","Location"]], use_container_width = True)
 
         st.download_button(
             label="Download Seen Jobs CSV",
-            data=seen_jobs_df.to_csv(index=False),
+            data=df.to_csv(index=False),
             file_name="seen_jobs.csv",
             mime="text/csv"
         )
@@ -56,14 +57,14 @@ remote = remote_option == "Remote Only"
 if st.button("Find Jobs"):
     if not anthropic_key or not jsearch_key:
         st.error("Please enter both API keys in the sidebar.")
-    if not uploaded_file:
+    elif not uploaded_file:
         st.error("Please upload your resume.")
     elif not job_input:
         st.error("Please enter at least one job title or keyword.")
     else:
         with st.spinner("Analyzing your resume and searching for jobs..."):
             try:
-                results = run_agent(uploaded_file, queries, location, remote)
+                results = run_agent(uploaded_file, queries, location or "United States", remote,anthropic_key=anthropic_key,jsearch_key=jsearch_key)
                 if results:
                     st.success(f"Found {len(results)} matching jobs!")
                     for job in results:

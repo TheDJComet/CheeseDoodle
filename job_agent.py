@@ -11,7 +11,10 @@ from urllib.parse import urlencode
 import time
 from bs4 import BeautifulSoup  # type: ignore
 import re
+import unicodedata
 from pathlib import Path
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 
 
 
@@ -23,6 +26,9 @@ Path(CACHE_DIR).mkdir(parents=True, exist_ok=True)
 # -----------------------------
 # UTILS
 # -----------------------------
+def clean_text(text):
+    return text or ""
+
 def chunk_list(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
@@ -67,24 +73,45 @@ def extract_json(text):
 #------------------------------
 def load_seen_jobs():
     seen = set()
-    file_path = Path.home() / "CheeseDoodle" / "seen_jobs" / "seen_jobs.csv"
+    file_path = Path.home() / "CheeseDoodle" / "Jobs" / "seen_jobs.csv"
     if file_path.exists():
-        with open(file_path, "r") as f:
+        with open(file_path, "r",encoding="utf-8") as f:
             reader = csv.reader(f)
             for row in reader:
                 seen.add(row[0])
     return seen
 
-def save_seen_job(job_url):
-    base_dir = Path.home() / "CheeseDoodle" / "seen_jobs"
+def save_seen_job(job):
+    base_dir = Path.home() / "CheeseDoodle" / "Jobs"
     file_path = base_dir / "seen_jobs.csv"
         
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(file_path, "a", newline="") as f:
+    with open(file_path, "a", newline="",encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([job_url])
+        writer.writerow([
+            job.get("link"),
+            job.get("title"),
+            job.get("company"),
+            job.get("location")
+        ])
+
+def save_seen_jobs_batch(jobs):
+    base_dir = Path.home() / "CheeseDoodle" / "Jobs"
+    file_path = base_dir / "seen_jobs.csv"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(file_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        for job in jobs:
+            writer.writerow([
+                job.get("link"),
+                job.get("title"),
+                job.get("company"),
+                job.get("location")
+            ])
+
 
 
 # -----------------------------
@@ -152,7 +179,7 @@ def search_jobs(user_queries, location="United States", remote=False, job_api_ke
                     "company": job.get("employer_name"),
                     "location": job.get("job_city"),
                     "link": job.get("job_apply_link"),
-                    "description": job.get("job_description")
+                    "description": clean_text(job.get("job_description"))
                 })
 
     unique_jobs = {job['link']: job for job in jobs}.values()
@@ -166,11 +193,11 @@ def get_job_cache_path(job):
     name = safe_filename(job.get("company", "unknown") + "_" + job.get("title", "role"))
     return CACHE_DIR / f"{name}.txt"
 
-def summarize_job(job):
+def summarize_job(job,client):
     cache_path = get_job_cache_path(job)
 
     if cache_path.exists():
-        with open(cache_path, "r") as f:
+        with open(cache_path, "r" , encoding="utf-8",errors="ignore") as f:
             return f.read()
 
     description = BeautifulSoup(job.get("description", ""), "html.parser").get_text()
@@ -194,9 +221,9 @@ Job:
         }]
     )
 
-    summary = response.content[0].text.strip()
+    summary = clean_text(response.content[0].text.strip())
 
-    with cache_path.open("w", encoding="utf-8") as f:
+    with cache_path.open("w", encoding="utf-8",errors="ignore") as f:
         f.write(summary)
 
     return summary
@@ -206,6 +233,7 @@ Job:
 # -----------------------------
 def score_jobs(resume_summary,jobs,client):
     seen_jobs = load_seen_jobs()
+    new_seen_jobs = []
     filtered_jobs = [job for job in jobs if job.get("link") not in seen_jobs]
     all_scored_jobs = []
 
@@ -218,9 +246,9 @@ def score_jobs(resume_summary,jobs,client):
         for i, job in enumerate(job_chunk):
             jobs_text += f"""
 Job {i+1}:
-Title: {job['title']}
-Company: {job['company']}
-Description: {job['description'][:800]}
+Title: {clean_text(job['title']) or ''}
+Company: {clean_text(job['company']) or ''}
+Description: {clean_text(job['description'][:800]) or ''}
 ---
 """
 
@@ -259,7 +287,7 @@ Jobs:
 
         if not scores:
             print("Failed chunk. Raw output:")
-            print(raw[:500])
+            print(raw[:500].encode("ascii",errors="ignore").decode("asciiS"))
             continue
 
         # map scores back to jobs
@@ -271,7 +299,8 @@ Jobs:
             job["score"] = score_data.get("score", 0)
             job["reason"] = score_data.get("reason", "")
             all_scored_jobs.append(job)
-            save_seen_job(job.get("link"))
+            new_seen_jobs.append(job)
+        save_seen_jobs_batch(new_seen_jobs)
             
 
     # sort + take top
@@ -294,6 +323,8 @@ def generate_cover_letter(job, resume_summary,client):
             "role": "user",
             "content": f"""
 Write a concise (under 300 words) cover letter.
+No emojis or special characters.
+Ensure to use current date.
 
 Candidate:
 {resume_summary}
@@ -310,6 +341,7 @@ Make it tailored, professional, and direct.
     )
 
     cover_letter = response.content[0].text.strip()
+    cover_letter = clean_text(cover_letter)
 
     company = safe_filename(job.get("company", "unknown"))
 
@@ -323,7 +355,7 @@ Make it tailored, professional, and direct.
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with file_path.open("w", encoding="utf-8") as f:
+    with file_path.open("w", encoding="utf-8",errors="ignore") as f:
         f.write(cover_letter)
 
     return filename
@@ -332,12 +364,21 @@ Make it tailored, professional, and direct.
 # MAIN
 # -----------------------------
 def run_agent(uploaded_file,user_queries, location="United States", remote=False,anthropic_key=None, jsearch_key=None):
+    if not anthropic_key:
+        raise ValueError("Anthropic API key is missing.")
+    if not jsearch_key:
+        raise ValueError("JSearch API key is missing.")
+    
     client = anthropic.Anthropic(api_key=anthropic_key)
     resume_text = extract_resume_text(uploaded_file)
+    print("extracting resume...")
     resume_summary = summarize_resume(resume_text, client)
+    resume_summary = clean_text(resume_summary)
+    print("searching jobs...")
     jobs = search_jobs(user_queries, location, remote, jsearch_key)
+    print("scoring jobs...")
     top_jobs = score_jobs(resume_summary, jobs, client)
-
+    print("generating cover letters...")
     results = []
 
     for job in top_jobs:
